@@ -155,3 +155,12 @@ void threadpool_destroy(struct Threadpool *pool) {
     free(pool->threads);
     free(pool);
 }
+
+void threadpool_wait_end(struct Threadpool *pool) {
+    pthread_mutex_lock(&pool->count_mutex);
+    while(pool->count_task>0) {
+        pthread_cond_wait(&pool->count_cond,&pool->count_mutex);
+    }
+    pthread_mutex_unlock(&pool->count_mutex);
+    threadpool_destroy(pool);
+}
