@@ -6,8 +6,9 @@
 #include <errno.h>
 
 struct Task {
-    void (*function)(void *arg);
+    void *(*function)(void *arg);
     void *arg;
+    void (*callback)(void *result);
 };
 
 struct Node {
@@ -16,8 +17,8 @@ struct Node {
 };
 
 struct Queue {
-    struct Node *front;
-    struct Node *rear;
+    struct Node *head;
+    struct Node *tail;
     pthread_mutex_t mutex;
     pthread_cond_t cond;
 };
@@ -27,109 +28,130 @@ struct Threadpool {
     int thread_count;
     struct Queue queue;
     int shutdown;
+
+    int count_task;
+    pthread_mutex_t count_mutex;
+    pthread_cond_t count_cond;
 };
 
-typedef struct threadpool {
-    pthread_t *threads;
-    int thread_count;
-    struct Queue queue;
-    int shutdown;
-} threadpool;
-
-void init_queue(struct Queue *q) {
-    q->front=NULL;
-    q->rear=NULL;
-}
-
 void enqueue(struct Queue *q,struct Task *task) {
+    pthread_mutex_lock(&q->mutex);
     struct Node *node=calloc(1,sizeof(struct Node));
     node->task=task;
-    if(q->rear==NULL) {
-        q->front=node;
-        q->rear=node;
+    if(q->tail==NULL) {
+        q->head=node;
+        q->tail=node;
     } else {
-        q->rear->next=node;
-        q->rear=node;
+        q->tail->next=node;
+        q->tail=node;
     }
+    pthread_cond_broadcast(&q->cond);
+    pthread_mutex_unlock(&q->mutex);
 }
 
-struct Task* dequeue(struct Queue *q) {
-    if(q->front==NULL) return NULL;
-    struct Node *temp=q->front;
+struct Task* dequeue(struct Queue *q,int *shutdown) {
+    pthread_mutex_lock(&q->mutex);
+
+    while(q->head==NULL && !(*shutdown)) {
+        pthread_cond_wait(&q->cond,&q->mutex);
+    }
+
+    if(q->head==NULL && *shutdown) {
+        pthread_mutex_unlock(&q->mutex);
+        return NULL;
+    }
+    struct Node *temp=q->head;
     struct Task *task=temp->task;
-    q->front=temp->next;
-    if(q->front==NULL) q->rear=NULL;
+    q->head=temp->next;
+    if(q->head==NULL) q->tail=NULL;
+    pthread_mutex_unlock(&q->mutex);
     free(temp);
     return task;
 }
 
-void threadpool_init(threadpool *pool,int n) {
+void* worker(void *arg) {
+    struct Threadpool *pool=(struct Threadpool*)arg;
+    while(1) {
+        struct Task *t=dequeue(&pool->queue,&pool->shutdown);
+        if(t==NULL) {
+            break;
+        }
+        void *result=t->function(t->arg);
+        if(t->callback) {
+            t->callback(result);
+        }
+        free(t->arg);
+        free(t);
+        pthread_mutex_lock(&pool->count_mutex);
+        pool->count_task--;
+        if(pool->count_task==0) {
+            pthread_cond_signal(&pool->count_cond);
+        }
+        pthread_mutex_unlock(&pool->count_mutex);
+    }
+    return NULL;
+}
+
+int threadpool_add(struct Threadpool *pool,struct Task *task) {
+    pthread_mutex_lock(&pool->count_mutex);
+    if(pool->shutdown) {
+        pthread_mutex_unlock(&pool->count_mutex);
+        return -1;
+    }
+    pool->count_task++;
+    pthread_mutex_unlock(&pool->count_mutex);
+
+    enqueue(&pool->queue,task);
+    return 0;
+}
+
+void threadpool_init(struct Threadpool *pool,int n) {
     int i;
     pool->thread_count=n;
     pool->shutdown=0;
     pool->threads=malloc(n*sizeof(pthread_t));
+    pool->count_task=0;
+    pthread_mutex_init(&pool->count_mutex,NULL);
+    pthread_cond_init(&pool->count_cond,NULL);
+    pool->queue.head=NULL;
+    pool->queue.tail=NULL;
+    pthread_mutex_init(&pool->queue.mutex,NULL);
+    pthread_cond_init(&pool->queue.cond,NULL);
+}
+
+struct Threadpool* threadpool_create(int n) {
+    int i;
+    struct Threadpool *pool=malloc(sizeof(struct Threadpool));
+    threadpool_init(pool,n);
     for(i=0;i<n;i++) {
-        //pthread_create(&pool->threads[i],NULL,worker,pool);
+        pthread_create(&pool->threads[i],NULL,worker,pool);
     }
+    return pool;
 }
 
-//-------------------------------------------
-//以下用于测试
+void threadpool_destroy(struct Threadpool *pool) {
+    int i;
+    pthread_mutex_lock(&pool->queue.mutex);
+    pool->shutdown=1;
+    pthread_cond_broadcast(&pool->queue.cond);
+    pthread_mutex_unlock(&pool->queue.mutex);
 
-void test_task(void *arg) {
-    int num = *(int*)arg;
+    for(i=0;i<pool->thread_count;i++) {
+        pthread_join(pool->threads[i],NULL);
+    }
 
-    printf("Thread %lu is processing task %d\n", pthread_self(), num);
-
-    // 模拟耗时任务
-    sleep(1);
-
-    printf("Thread %lu finished task %d\n", pthread_self(), num);
-
-    //free(arg);  // 释放参数
+    struct Node *cur=pool->queue.head;
+    while(cur) {
+        struct Node *tmp=cur;
+        free(cur->task->arg);
+        free(cur->task);
+        cur=cur->next;
+        free(tmp);
+    }
+    pthread_mutex_destroy(&pool->queue.mutex);
+    pthread_cond_destroy(&pool->queue.cond);
+    pthread_mutex_destroy(&pool->count_mutex);
+    pthread_cond_destroy(&pool->count_cond);
+    free(pool->threads);
+    free(pool);
 }
-
-int main() {
-    struct Queue q;
-    init_queue(&q);
-
-    struct Task *t = malloc(sizeof(struct Task));
-
-    t->function = test_task;
-    int x = 10;
-    t->arg = &x;
-
-    enqueue(&q,t);
-
-    struct Task *t2 = dequeue(&q);
-    t2->function(t2->arg);
-    free(t);
-}
-
-// int main() {
-//     struct Threadpool pool;
-
-//     //初始化线程池（4个线程）
-//     threadpool_init(&pool, 4);
-
-//     //提交10个任务
-//     for (int i = 0; i < 10; i++) {
-//         struct Task *task = malloc(sizeof(struct Task));
-
-//         int *arg = malloc(sizeof(int));
-//         *arg = i;
-
-//         task->function = test_task;
-//         task->arg = arg;
-
-//         threadpool_add(&pool, task);
-//     }
-
-//     //等待任务执行（简单方式）
-//     sleep(5);
-
-//     //销毁线程池
-//     threadpool_destroy(&pool);
-
-//     return 0;
-// }
