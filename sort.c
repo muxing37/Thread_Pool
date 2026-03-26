@@ -1,10 +1,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <unistd.h>
 #include "threadpool.h"
 
 #define CAP 10000033
-#define NUMBER 48
 
 struct Range {
     int *num;
@@ -38,11 +38,13 @@ int main()
 {
     int i,j;
     int *num=malloc(sizeof(int)*CAP);
+    int c=sysconf(_SC_NPROCESSORS_ONLN);
+    int NUMBER=2*c;
     int range=CAP/NUMBER+1;
     int n=NUMBER;
     get_arry(num);
 
-    struct Threadpool *pool=threadpool_create(12);
+    struct Threadpool *pool=threadpool_create(c);
 
     for(j=0;n>0;j++) {
         for(i=0;i<n;i++) {
@@ -65,7 +67,4 @@ int main()
         range=range*2;
         threadpool_wait(pool);
     }
-
-    
-
 }
