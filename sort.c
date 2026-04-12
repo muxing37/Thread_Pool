@@ -47,11 +47,14 @@ int main()
     struct Threadpool *pool=threadpool_create(c);
 
     for(j=0;n>0;j++) {
+        int base_size=CAP/n;
+        int remainder=CAP%n;
+        int start=0;
         for(i=0;i<n;i++) {
+            int size=base_size+(i<remainder ? 1:0);
             struct Range *ra=calloc(1,sizeof(struct Range));
-            ra->left=i*range;
-            ra->right=(i+1)*range;
-            if(ra->right>CAP) ra->right=CAP;
+            ra->left=start;
+            ra->right=start+size;
 
             ra->num=num;
 
@@ -66,5 +69,12 @@ int main()
         else n=(n+1)/2;
         range=range*2;
         threadpool_wait(pool);
+    }
+
+    for(i=1;i<CAP;i++) {
+        if(num[i]<num[i-1]) {
+            printf("error %d %d %d\n",i,num[i-1],num[i]);
+            break;
+        }
     }
 }
